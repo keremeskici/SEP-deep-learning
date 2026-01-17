@@ -1,7 +1,17 @@
+from __future__ import annotations
+
 from typing import Any, Dict, Optional
 import torch.nn as nn
 
 from .resnet import ModifiedResNet18
+
+
+_ALIASES = {
+    "modified_resnet18",
+    "modifiedresnet18",
+    "resnet18_smallstem",
+    "smallstem_resnet18",
+}
 
 
 def build_model(
@@ -12,22 +22,24 @@ def build_model(
     in_channels: Optional[int] = None,
     init_weights: bool = False,
 ) -> nn.Module:
-    if config is not None and isinstance(config, dict):
-        model_cfg = config.get("model", {})
-        architecture = architecture or model_cfg.get("architecture", "modified_resnet18")
-        if num_classes is None:
-            num_classes = model_cfg.get("num_classes", 6)
-        if in_channels is None:
-            in_channels = model_cfg.get("in_channels", 3)
+    # read from config if provided
+    if isinstance(config, dict):
+        cfg = config.get("model", {})
+        architecture = architecture or cfg.get("architecture", "modified_resnet18")
+        num_classes = cfg.get("num_classes", 6) if num_classes is None else num_classes
+        in_channels = cfg.get("in_channels", 3) if in_channels is None else in_channels
     else:
         architecture = architecture or "modified_resnet18"
         num_classes = 6 if num_classes is None else num_classes
         in_channels = 3 if in_channels is None else in_channels
 
-    arch = str(architecture).strip().lower()
-    aliases = {"modified_resnet18", "modifiedresnet18", "resnet18_smallstem", "smallstem_resnet18"}
+    if num_classes <= 0:
+        raise ValueError(f"num_classes must be > 0, got {num_classes}")
+    if in_channels <= 0:
+        raise ValueError(f"in_channels must be > 0, got {in_channels}")
 
-    if arch in aliases:
+    arch = str(architecture).strip().lower()
+    if arch in _ALIASES:
         model: nn.Module = ModifiedResNet18(num_classes=int(num_classes), in_channels=int(in_channels))
     else:
         raise ValueError(f"Unsupported architecture: {architecture}")
@@ -39,6 +51,7 @@ def build_model(
 
 
 def initialize_weights_(model: nn.Module) -> None:
+    # simple init; ok for ReLU convnets
     for m in model.modules():
         if isinstance(m, nn.Conv2d):
             nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
