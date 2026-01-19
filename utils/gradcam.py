@@ -5,69 +5,76 @@ import numpy as np
 # GradCam implementation for the project
 # based on the paper / tutorials I found
 class GradCAM:
-    def __init__(self, model):
+    # student note: need to match the arguments the demo script sends
+    def __init__(self, model, target_layer):
         self.model = model
-        self.model.eval() # make sure its in eval mode
+        self.target_layer = target_layer
         
-        # placeholders for the data we need to catch
+        # hook handles so we can remove them later
+        self.h1 = self.target_layer.register_forward_hook(self.save_activation)
+        self.h2 = self.target_layer.register_full_backward_hook(self.save_gradient)
+        
         self.gradients = None
         self.activations = None
-        
-        # WAITING FOR INPUT
-        # usually its the last conv layer, maybe layer4?
-        self.target_layer = None 
-        
-        # self.target_layer.register_forward_hook(self.save_activation)
-        # self.target_layer.register_backward_hook(self.save_gradient)
 
     def save_gradient(self, module, grad_input, grad_output):
-        # save gradients for later
-        self.gradients = grad_output[0]
+        # save gradients during backward pass
+        self.gradients = grad_output[0].detach()
 
     def save_activation(self, module, input, output):
-        # save the feature maps
-        self.activations = output
+        # save activations during forward pass
+        self.activations = output.detach()
 
-    def get_cam(self, x, class_idx=None):
-        # x is the image tensor
+    def remove_hooks(self):
+        # cleanup
+        self.h1.remove()
+        self.h2.remove()
+
+    # using __call__ so we can use it like a function
+    def __call__(self, input_tensor, target_class=None):
+        # handle the case where input is missing batch dim
+        if len(input_tensor.shape) == 3:
+             input_tensor = input_tensor.unsqueeze(0)
+
+        # make sure model is in eval mode
+        self.model.eval()
+        
+        # need gradients for backward pass
+        input_tensor = input_tensor.requires_grad_(True)
         
         # run the model
-        output = self.model(x)
+        output = self.model(input_tensor)
         
-        if class_idx is None:
-            # if no class provided, pick the best one
-            class_idx = torch.argmax(output)
+        if target_class is None:
+            # .item() to get the number from tensor
+            target_class = torch.argmax(output).item()
 
-        # clear any old gradients
         self.model.zero_grad()
         
-        # get the score for the target class
-        score = output[0, class_idx]
+        # get score for target class
+        score = output[0, target_class]
+        score.backward(retain_graph=True)
         
-        # compute gradients
-        score.backward()
-        
-        # getting the values from hooks
+        # get saved gradients and activations
         grads = self.gradients
         fmaps = self.activations
         
-        # calculating the weights (pooling)
-        # shape is usually (batch, channels, h, w)
+        # pooling weights
         weights = torch.mean(grads, dim=(2, 3), keepdim=True)
         
-        # multiply feature maps by weights
-        # this is the weighted combination part
+        # weighted combination
         cam = torch.sum(weights * fmaps, dim=1, keepdim=True)
-        
-        # apply relu because we only want positive impact
         cam = F.relu(cam)
         
-        # resize it back to image size 64x64
-        cam = F.interpolate(cam, size=(64, 64), mode='bilinear', align_corners=False)
+        # resize to match input size (64x64)
+        # assuming input is (B, C, H, W)
+        cam = F.interpolate(cam, size=(input_tensor.shape[2], input_tensor.shape[3]), 
+                           mode='bilinear', align_corners=False)
         
-        # normalize to 0-1 range so we can plot it
+        # normalize to 0-1 range
+        cam = cam.squeeze()
         cam = cam - torch.min(cam)
-        cam = cam / torch.max(cam)
+        cam = cam / (torch.max(cam) + 1e-8) # avoid div by zero
         
-        # return as a simple numpy array for the demo script
-        return cam.data.cpu().numpy()[0, 0]
+        # return the heatmap (numpy) and the class we used
+        return cam.cpu().numpy(), target_class
