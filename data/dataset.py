@@ -57,6 +57,6 @@ class FER_Dataset(Dataset):
         if self.transform: # apply the transforms defined in transforms.py
             image = self.transform(image)
 
-        return image, torch.tensor(label)
+        return image, torch.tensor(label, dtype=torch.long) # since cross entropy loss needs the target labels as long tensors
 
 
