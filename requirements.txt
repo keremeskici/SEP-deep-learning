@@ -1,0 +1,6 @@
+
+# for dataset and transforms
+torch
+torchvision
+pillow
+numpy

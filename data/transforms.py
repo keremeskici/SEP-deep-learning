@@ -4,6 +4,9 @@ from torchvision import transforms
 
 # To mitigate overfitting we split the data into training, validation and test set, so the model can be evaluated on unseen data during and after tarining and futhermore we apply data augmentation techniques so the model dosen´t only memorize the training data
 
+mean = (0.485, 0.456, 0.406)
+std  = (0.229, 0.224, 0.225)
+
 def get_train_transforms(): # Data augmentation for the training set
     return transforms.Compose([ 
         transforms.Resize((64,64)),

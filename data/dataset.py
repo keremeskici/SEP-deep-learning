@@ -29,7 +29,10 @@ class FER_Dataset(Dataset):
             raise ValueError("set_type must be 'train', 'val' or 'test'")
 
         # Subfolder that represent labels/classes in root_dir
-        self.classes_list = sorted(os.listdir(root_dir)) # returns every name of a subfolder in root_dir and sorts them alphabetically as a list
+        self.classes_list = sorted([ # list that returns all subfolder names in root_dir and sorts them alphabetically
+            d for d in os.listdir(root_dir) # in macOS and Linux the order of os.listdir is arbitrary, so sorting is necessary to ensure consistent class indices
+            if os.path.isdir(os.path.join(root_dir, d)) 
+        ])
         self.class_dict = {cls: i for i, cls in enumerate(self.classes_list)} # turn the list into a dictionary with class names as keys and their corresponding indices as values
 
         # the same as: 
@@ -42,7 +45,7 @@ class FER_Dataset(Dataset):
         for cls in self.classes_list: # iterate through every class in the classes_list
             cls_dir = os.path.join(root_dir, cls) # root_dir + class name = path to the class directory
             for img in os.listdir(cls_dir): # iterate through every image in the class directory
-                if img.lower().endswith(('.jpg', '.png')): # check if the file is an image
+                if img.lower().endswith(('.jpg', '.jpeg', '.png')): # check if the file is an image
                     self.samples.append( # add a tuple of (image_path, label) to the samples list
                         (os.path.join(cls_dir, img), self.class_dict[cls]) # image path and corresponding label as number
                     )
