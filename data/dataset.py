@@ -30,8 +30,8 @@ class FER_Dataset(Dataset):
 
         # Subfolder that represent labels/classes in root_dir
         self.classes_list = sorted([ # list that returns all subfolder names in root_dir and sorts them alphabetically
-            d for d in os.listdir(root_dir) # in macOS and Linux the order of os.listdir is arbitrary, so sorting is necessary to ensure consistent class indices
-            if os.path.isdir(os.path.join(root_dir, d)) 
+            d for d in os.listdir(root_dir) 
+            if os.path.isdir(os.path.join(root_dir, d)) # in MacOs sometimes hidden files/folders are created that are not directories, so we check if it is a directory
         ])
         self.class_dict = {cls: i for i, cls in enumerate(self.classes_list)} # turn the list into a dictionary with class names as keys and their corresponding indices as values
 
@@ -49,7 +49,12 @@ class FER_Dataset(Dataset):
                     self.samples.append( # add a tuple of (image_path, label) to the samples list
                         (os.path.join(cls_dir, img), self.class_dict[cls]) # image path and corresponding label as number
                     )
-
+        if len(self.samples) == 0:
+            raise RuntimeError(
+                f"No images found in {root_dir}. "
+                "Check folder structure and file extensions."
+            )
+        
     def __len__(self): # always in the interface needs to be implemented
         return len(self.samples)
 
