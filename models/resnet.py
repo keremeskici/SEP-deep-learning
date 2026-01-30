@@ -14,29 +14,25 @@ class ModifiedResNet18(nn.Module):
 
         self.stem = SmallImageStem(in_channels=in_channels, out_channels=base_width)
 
-        self.layer1 = self._make_layer(BasicBlock, planes=base_width, blocks=2, stride=1)
-        self.layer2 = self._make_layer(BasicBlock, planes=base_width * 2, blocks=2, stride=2)
-        self.layer3 = self._make_layer(BasicBlock, planes=base_width * 4, blocks=2, stride=2)
-        self.layer4 = self._make_layer(BasicBlock, planes=base_width * 8, blocks=2, stride=2)
+        self.layer1 = self._make_layer(BasicBlock, out_ch=base_width, blocks=2, stride=1)
+        self.layer2 = self._make_layer(BasicBlock, out_ch=base_width * 2, blocks=2, stride=2)
+        self.layer3 = self._make_layer(BasicBlock, out_ch=base_width * 4, blocks=2, stride=2)
+        self.layer4 = self._make_layer(BasicBlock, out_ch=base_width * 8, blocks=2, stride=2)
 
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(base_width * 8 * getattr(BasicBlock, "expansion", 1), num_classes)
 
-    def _make_layer(self, block: type[nn.Module], planes: int, blocks: int, stride: int) -> nn.Sequential:
+    def _make_layer(self, block: type[nn.Module], out_ch: int, blocks: int, stride: int) -> nn.Sequential:
+        """Builds one ResNet stage."""
+        layers = []
+
+        layers.append(block(self.inplanes, out_ch, stride=stride))
+
         expansion = getattr(block, "expansion", 1)
-
-        downsample = None
-        if stride != 1 or self.inplanes != planes * expansion:
-            downsample = nn.Sequential(
-                nn.Conv2d(self.inplanes, planes * expansion, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes * expansion),
-            )
-
-        layers = [block(self.inplanes, planes, stride=stride, downsample=downsample)]
-        self.inplanes = planes * expansion
+        self.inplanes = out_ch * expansion
 
         for _ in range(1, blocks):
-            layers.append(block(self.inplanes, planes, stride=1, downsample=None))
+            layers.append(block(self.inplanes, out_ch, stride=1))
 
         return nn.Sequential(*layers)
 
