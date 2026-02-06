@@ -2,6 +2,7 @@
 import os
 import sys
 import argparse
+import wandb
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Tuple, Optional
@@ -234,6 +235,14 @@ def main() -> None:
     log_interval = int(config.get("logging", {}).get("log_interval", 10))
     save_interval = int(config.get("checkpoint", {}).get("save_interval", 5))
 
+# Implementation of WandB for experiment tracking. Make sure to install wandb and login before running.
+    wandb.init(
+    project="fer-training", # The name can be changed to your liking, this will be the project name in your WandB dashboard
+    name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+    config=config
+)
+
+    #Train loop:
     for epoch in range(start_epoch, epochs):
         epoch_id = epoch + 1
         lr_now = get_current_lr(optimizer)
@@ -246,6 +255,16 @@ def main() -> None:
         val_metrics = validate(
             model, val_loader, criterion, device, class_names, epoch_id
         )
+        
+# WandB requires logging once per epoch, so we log the training and validation metrics here
+# you will have to login preferably via lmu and after logging in, you can run the training script and it will automatically log the metrics to your WandB dashboard under the specified project name.
+        wandb.log({
+            "epoch": epoch_id,
+            "train_loss": train_loss,
+            "train_acc": train_acc,
+            "val_loss": val_metrics["loss"],
+            "val_acc": val_metrics["accuracy"],
+        })
 
         if hasattr(scheduler, "__class__") and scheduler.__class__.__name__ == "CosineAnnealingWarmRestarts":
             scheduler.step(epoch_id)
