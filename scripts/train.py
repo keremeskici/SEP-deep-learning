@@ -234,7 +234,8 @@ def main() -> None:
     epochs = int(config.get("training", {}).get("epochs", 10))
     log_interval = int(config.get("logging", {}).get("log_interval", 10))
     save_interval = int(config.get("checkpoint", {}).get("save_interval", 5))
-
+    
+#before starting training loop type wandb login in temrinal (this is necessary) and authenticate your account. This will allow you to track your experiments in the WandB dashboard. You can also customize the project name and run name in the wandb.init() call below.
 # Implementation of WandB for experiment tracking. Make sure to install wandb and login before running.
     wandb.init(
     project="fer-training", # The name can be changed to your liking, this will be the project name in your WandB dashboard
@@ -256,8 +257,7 @@ def main() -> None:
             model, val_loader, criterion, device, class_names, epoch_id
         )
         
-# WandB requires logging once per epoch, so we log the training and validation metrics here
-# you will have to login preferably via lmu and after logging in, you can run the training script and it will automatically log the metrics to your WandB dashboard under the specified project name.
+# these are the metrics that will be logged to WandB for each epoch. You can customize this to include any additional metrics you compute in the validate function.
         wandb.log({
             "epoch": epoch_id,
             "train_loss": train_loss,
