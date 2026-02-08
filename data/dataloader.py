@@ -1,159 +1,294 @@
+# dataloader is used to create batches from the dataset and to load them during training/validation/testing
+# for the dataloader implementation I use the DataLoader class from torch.utils.data
+# a worker in Pytorch is a predifined subprocess that is used to load data in parallel to the main process, which can significantly speed up the data loading process, especially when dealing with large datasets or complex data transformations
+
+# since multiple datasets can be combined dataloader is now changed to use mixtures of different datasets
+# ConcatDataset takes a list of datasets and concatenates them to one big dataset
+# So Dataset can be mixed
+# After conctenating the now big Dataset is split into Training/validation/test using (70/15/15) ratio
+# Then every set chooses the right augmentation from transforms.py
+
+
 from __future__ import annotations
 
 import os
 import random
-from typing import Tuple, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+
 import numpy as np
 import torch
+from torchvision import transforms
+from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
 
-from torch.utils.data import DataLoader, ConcatDataset
+from data.dataset import FER_Dataset
+from data.transforms import get_train_transforms, get_val_transforms, get_test_transforms
+from data.adapters import folder_adapter, rafdb_csv_adapter, affectnet_csv_adapter
+from data.calculate_mean_std import compute_mean_std
 
-from data.adapters import rafdb_csv_adapter, affectnet_csv_adapter, folder_adapter
-from data.dataset import FER_Dataset, FER_DatasetFromSamples
+
+IMG_SAMPLE = Tuple[str, int]  # (img_path, canonical_label_id)
 
 
+# Reproducibility: 
 def seed_worker(worker_id: int) -> None:
+    # Every worker gets a different, deterministic seed derived from the global seed -> fixed random order
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
     random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
-def build_dataset(dataset_cfg: dict, set_type: str) -> Optional[torch.utils.data.Dataset]:
-    ds_type = dataset_cfg.get("type", "folder")
-    root = dataset_cfg.get("root")
-    
-    if ds_type == "rafdb":
-        # RAF-DB typically has CSV files for splits
-        if set_type == "train":
-            csv_path = dataset_cfg.get("train_csv")
-        elif set_type == "val":
-            csv_path = dataset_cfg.get("val_csv")
-        elif set_type == "test":
-            csv_path = dataset_cfg.get("test_csv")
-        else:
-            return None
-            
-        if not csv_path or not os.path.exists(csv_path):
-            return None
-            
-        samples = rafdb_csv_adapter(root, csv_path)
-        return FER_DatasetFromSamples(samples, set_type=set_type)
+# Tranformation Wrapper Class:
+class TransformDataset(Dataset):
+    """
+    Applies transform *after* splitting
+    Expects the underlying dataset to return (PIL_image, label_tensor_or_int)
+    Our FER_Dataset returns (PIL_image, torch.long) when transform=None
+    """
 
-    elif ds_type == "affectnet":
-        if set_type == "train":
-            csv_path = dataset_cfg.get("train_csv")
-        elif set_type == "val":
-            csv_path = dataset_cfg.get("val_csv")
-        # AffectNet usually validation is the test set for us, or separate
-        else:
-            return None # Or handle test if needed
+    def __init__(self, base_ds: Dataset, transform=None):
+        self.base_ds = base_ds
+        self.transform = transform
 
-        if not csv_path or not os.path.exists(csv_path):
-            return None
+    def __len__(self) -> int:
+        return len(self.base_ds)
 
-        samples = affectnet_csv_adapter(root, csv_path)
-        return FER_DatasetFromSamples(samples, set_type=set_type)
-
-    elif ds_type == "folder":
-        # Folder dataset: root/split/class/image.jpg OR root/class/image.jpg
-        # If set_type is provided, try to find a subfolder with that name
-        # If not found, and it's train, maybe use the whole root? 
-        # For mixed datasets, usually we assume root/train, root/val structure for folder datasets
-        
-        target_dir = os.path.join(root, set_type) if set_type in ["train", "val", "test"] else root
-        if not os.path.isdir(target_dir):
-            if set_type == "train":
-                # Fallback: if no split folders, assume root is the dataset (only for training?)
-                # Or just strictly require 'training', 'validation' folders?
-                # Let's check for standard names
-                alt_dir = os.path.join(root, "training")
-                if os.path.isdir(alt_dir):
-                    target_dir = alt_dir
-                else:
-                    target_dir = root # Last resort: just use root
-            elif set_type == "val":
-                 alt_dir = os.path.join(root, "validation")
-                 if os.path.isdir(alt_dir):
-                     target_dir = alt_dir
-                 else:
-                     return None
-            else:
-                return None
-        
-        return FER_Dataset(root_dir=target_dir, set_type=set_type)
-
-    return None
+    def __getitem__(self, idx: int):
+        x, y = self.base_ds[idx] 
+        if self.transform is not None:
+            x = self.transform(x)
+        return x, y
 
 
-def get_dataloaders(
-    datasets_cfg: list,
-    batch_size: int = 64,
-    num_workers: int = 4,
-    pin_memory: bool = True,
-    persistent_workers: bool = True,
-    seed: int = 42,
-) -> Tuple[DataLoader, DataLoader, DataLoader]: 
-   
-    train_datasets = []
-    val_datasets = []
-    test_datasets = []
+# Split helper to enable 70/15/15 ratio for training/validation/test
+def split_70_15_15(full_ds: Dataset, seed: int) -> Tuple[Dataset, Dataset, Dataset]:
+    n = len(full_ds)
+    if n < 3:
+        raise RuntimeError(f"Zu wenige Samples ({n}) für 70/15/15 Split.")
 
-    for ds_cfg in datasets_cfg:
-        train_ds = build_dataset(ds_cfg, "train")
-        if train_ds is not None and len(train_ds) > 0:
-            train_datasets.append(train_ds)
-            
-        val_ds = build_dataset(ds_cfg, "val")
-        if val_ds is not None and len(val_ds) > 0:
-            val_datasets.append(val_ds)
+    n_train = int(n * 0.70)
+    n_val = int(n * 0.15)
+    n_test = n - n_train - n_val  
 
-        test_ds = build_dataset(ds_cfg, "test")
-        if test_ds is not None and len(test_ds) > 0:
-            test_datasets.append(test_ds)
+    # safety for very small datasets
+    if n_val == 0:
+        n_val = 1
+        n_train = max(1, n_train - 1)
+        n_test = n - n_train - n_val
+    if n_test == 0:
+        n_test = 1
+        n_train = max(1, n_train - 1)
+        n_val = n - n_train - n_test
 
-    if not train_datasets:
-        raise ValueError("No training datasets found! Check config.")
+    g = torch.Generator().manual_seed(seed)
+    train_subset, val_subset, test_subset = random_split(
+        full_ds, [n_train, n_val, n_test], generator=g
+    )
+    return train_subset, val_subset, test_subset
 
-    # Combine datasets
-    combined_train = ConcatDataset(train_datasets)
-    combined_val = ConcatDataset(val_datasets) if val_datasets else None
-    combined_test = ConcatDataset(test_datasets) if test_datasets else None
 
-    # Helper to get classes from the first dataset (assuming consistency)
-    # We should probably enforce consistency or merge classes, but for now take first
-    if hasattr(train_datasets[0], "classes_list"):
-         combined_train.classes_list = train_datasets[0].classes_list
+# Utility: optional limiting to control "mix ratio"
+def _maybe_limit(samples: List[IMG_SAMPLE], limit: Optional[int], seed: int) -> List[IMG_SAMPLE]:
+    """
+    If limit is set, take a deterministic subset of that size
+    Useful if you want to control mixture ratio by controlling how many images you include
+    """
+    if limit is None:
+        return samples
+    if limit <= 0:
+        return []
+    if len(samples) <= limit:
+        return samples
 
+    rng = random.Random(seed)
+    idxs = list(range(len(samples)))
+    rng.shuffle(idxs)
+    idxs = idxs[:limit]
+    return [samples[i] for i in idxs]
+
+
+# Main entry for the dataloader
+def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader]:
+    """
+    Expects config like:
+
+    config = {
+      "seed": 42,
+      "dataloader": {
+        "batch_size": 64,
+        "eval_batch_size": 128,
+        "num_workers": 4,
+        "pin_memory": True,
+        "persistent_workers": True,
+        "drop_last": True
+      },
+      "data": {
+        "fer": {
+          "enabled": True,
+          "root": "/path/to/fer",
+          "limit": None
+        },
+        "rafdb": {
+          "enabled": True,
+          "images_root": "/path/to/raf/images",
+          "csvs": ["/path/to/train.csv", "/path/to/test.csv"],   # optional list; we pool them all
+          "limit": None
+        },
+        "affectnet": {
+          "enabled": True,
+          "images_root": "/path/to/affect/images",
+          "csvs": ["/path/to/train.csv", "/path/to/val.csv", "/path/to/test.csv"],
+          "limit": None
+        }
+      }
+    }
+    """
+
+    seed = int(cfg.get("seed", 42))
+    dl_cfg = cfg.get("dataloader", {})
+    data_cfg = cfg.get("data", {})
+
+    batch_size = int(dl_cfg.get("batch_size", 64))
+    eval_batch_size = int(dl_cfg.get("eval_batch_size", batch_size))
+    num_workers = int(dl_cfg.get("num_workers", 4))
+    pin_memory = bool(dl_cfg.get("pin_memory", True))
+    persistent_workers = bool(dl_cfg.get("persistent_workers", True)) and num_workers > 0
+    drop_last = bool(dl_cfg.get("drop_last", True))
+
+    # collect full datasets (no transforms yet) 
+    full_datasets: List[Dataset] = []
+
+    # FER Folder:
+    fer = data_cfg.get("fer", {})
+    if fer.get("enabled", False):
+        fer_root = fer.get("root")
+        if not fer_root:
+            raise RuntimeError("cfg.data.fer.enabled=True aber cfg.data.fer.root fehlt.")
+
+        # Pool everything that exists: training/validation/test (so we can re-split 70/15/15 after concat)
+        pooled: List[IMG_SAMPLE] = []
+        for sub in ("training", "validation", "test"):
+            p = os.path.join(fer_root, sub)
+            if os.path.isdir(p):
+                pooled.extend(folder_adapter(p))
+
+        pooled = _maybe_limit(pooled, fer.get("limit"), seed=seed)
+
+        if len(pooled) == 0:
+            raise RuntimeError(f"FER enabled, aber 0 Samples gefunden unter {fer_root}.")
+
+        full_datasets.append(FER_Dataset(pooled, transform=None))
+
+    # RAF-DB CSV
+    raf = data_cfg.get("rafdb", {})
+    if raf.get("enabled", False):
+        images_root = raf.get("images_root")
+        csvs = raf.get("csvs", [])
+        if not images_root or not csvs:
+            raise RuntimeError("cfg.data.rafdb.enabled=True aber images_root oder csvs fehlt.")
+
+        pooled: List[IMG_SAMPLE] = []
+        for csv_path in csvs:
+            pooled.extend(rafdb_csv_adapter(images_root, csv_path))
+
+        pooled = _maybe_limit(pooled, raf.get("limit"), seed=seed + 1)
+
+        if len(pooled) == 0:
+            raise RuntimeError("RAF-DB enabled, aber 0 Samples nach Adapter gefunden (Pfade/CSV/Labels prüfen).")
+
+        full_datasets.append(FER_Dataset(pooled, transform=None))
+
+    # AffectNet CSV
+    aff = data_cfg.get("affectnet", {})
+    if aff.get("enabled", False):
+        images_root = aff.get("images_root")
+        csvs = aff.get("csvs", [])
+        if not images_root or not csvs:
+            raise RuntimeError("cfg.data.affectnet.enabled=True aber images_root oder csvs fehlt.")
+
+        pooled: List[IMG_SAMPLE] = []
+        for csv_path in csvs:
+            pooled.extend(affectnet_csv_adapter(images_root, csv_path))
+
+        pooled = _maybe_limit(pooled, aff.get("limit"), seed=seed + 2)
+
+        if len(pooled) == 0:
+            raise RuntimeError("AffectNet enabled, aber 0 Samples nach Adapter gefunden (Pfade/CSV/Labels prüfen).")
+
+        full_datasets.append(FER_Dataset(pooled, transform=None))
+
+    if len(full_datasets) == 0:
+        raise RuntimeError("Kein Dataset aktiviert. Setze cfg.data.<name>.enabled=True.")
+
+    # concat BEFORE split because the mix of different dataset should be considered one
+    full_ds = ConcatDataset(full_datasets)
+
+    # split 70/15/15
+    train_subset, val_subset, test_subset = split_70_15_15(full_ds, seed=seed)
+
+    # Compute mean/std ONLY on training subset (after splitting and concat of course)
+    mean, std = compute_mean_std(
+        train_subset, # mean and std s only calculated on the trainset otherwise information from val and test would get into training (data leakage)
+        img_size=64,
+        batch_size=256,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+    print("Computed TRAIN mean:", mean.tolist())
+    print("Computed TRAIN std:", std.tolist())
+
+    # apply transforms AFTER split
+    train_ds = TransformDataset(
+    train_subset,
+    transform=get_train_transforms(mean, std)
+    )
+
+    val_ds = TransformDataset(
+        val_subset,
+        transform=get_val_transforms(mean, std)
+    )
+
+    test_ds = TransformDataset(
+        test_subset,
+        transform=get_test_transforms(mean, std)
+    )
+
+    # deterministic shuffling
     g = torch.Generator()
     g.manual_seed(seed)
 
     train_loader = DataLoader(
-        combined_train, 
+        train_ds,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=pin_memory,
+        drop_last=drop_last,
         worker_init_fn=seed_worker,
         generator=g,
-        persistent_workers=persistent_workers and num_workers > 0,
+        persistent_workers=persistent_workers,
     )
 
     val_loader = DataLoader(
-        combined_val,
-        batch_size=batch_size,
-        shuffle=False,
+        val_ds,
+        batch_size=eval_batch_size,
+        shuffle=False, # of course no shuffeling in validation
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=persistent_workers and num_workers > 0, 
-    ) if combined_val else None
+        drop_last=False,
+        persistent_workers=persistent_workers,
+    )
 
     test_loader = DataLoader(
-        combined_test,
-        batch_size=batch_size,
-        shuffle=False,
+        test_ds,
+        batch_size=eval_batch_size,
+        shuffle=False, # no shuffeling in test as well
         num_workers=num_workers,
         pin_memory=pin_memory,
-        persistent_workers=persistent_workers and num_workers > 0,
-    ) if combined_test else None
+        drop_last=False,
+        persistent_workers=persistent_workers,
+    )
 
     return train_loader, val_loader, test_loader
