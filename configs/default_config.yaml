@@ -1,0 +1,49 @@
+model:
+  architecture: modified_resnet18
+  num_classes: 6
+  in_channels: 3
+
+data:
+  datasets:
+    - type: rafdb
+      root: datasets/RAF-DB/DATASET
+      train_csv: datasets/RAF-DB/train_labels.csv
+      val_csv: datasets/RAF-DB/test_labels.csv
+      test_csv: datasets/RAF-DB/test_labels.csv
+  batch_size: 64
+  num_workers: 0
+  pin_memory: false
+
+training:
+  epochs: 50
+  use_class_weights: true
+  optimizer:
+    name: adam
+    lr: 0.001
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+  scheduler:
+    name: step_lr
+    step_size: 15
+    gamma: 0.1
+
+early_stopping:
+  enabled: true
+  patience: 10
+  min_delta: 0.001
+
+checkpoint:
+  save_interval: 5
+
+logging:
+  log_interval: 10
+  use_tensorboard: false
+  use_wandb: true
+
+classes:
+  - anger
+  - fear
+  - disgust
+  - sadness
+  - happiness
+  - surprise

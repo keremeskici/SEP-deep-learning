@@ -13,9 +13,8 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from models import build_model
-from data.transforms import get_inference_transforms
-from utils.checkpoint import load_model_for_inference
+from data.transforms import get_test_transforms
+from utils.checkpoint import load_model_from_checkpoint
 from utils.gradcam import GradCAM
 from utils.device import get_device
 
@@ -198,33 +197,26 @@ def draw_results(frame, emotion, confidence, probabilities, heatmap, roi, alpha=
     return output
 
 def main():
-    # parse arguments
-    parser = argparse.ArgumentParser(description="Webcam emotion recognition with Grad-CAM")
-    parser.add_argument('--model_path', type=str, required=True, help='Path to model checkpoint')
-    parser.add_argument('--device', type=str, default='auto', choices=['auto', 'cuda', 'mps', 'cpu'])
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--device', type=str, default='auto')
     args = parser.parse_args()
     
-    # get device
     device = get_device(args.device)
     print(f"Using device: {device}")
     
-    # load model
     print("Loading model...")
-    config = {
-        'model': {
-            'architecture': 'modified_resnet18',
-            'num_classes': 6,
-            'in_channels': 3
-        }
-    }
-    model = build_model(config)
-    model = load_model_for_inference(args.model_path, model, device=device.type)
+    try:
+        model = load_model_from_checkpoint(args.model_path, device=device.type)
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
     
     # setup gradcam
     gradcam = GradCAM(model, target_layer=model.layer4)
     
     # setup transform
-    transform = get_inference_transforms(image_size=64)
+    transform = get_test_transforms()
     
     # setup face detector
     face_detector = FaceDetector()

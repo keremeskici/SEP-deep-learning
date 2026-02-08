@@ -15,7 +15,7 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from configs import load_config, get_default_config
+from configs import load_config
 from data.dataloader import get_dataloaders
 from models import build_model
 from utils.class_weights import compute_class_weights, print_class_distribution
@@ -28,20 +28,17 @@ from utils.device import get_device, print_device_info
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Train FER model",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
-    p.add_argument("--config", type=str, default="configs/default_config.yaml", help="YAML config path")
-    p.add_argument("--data_root", type=str, default="data", help="Dataset root (contains training/validation/test)")
-    p.add_argument("--output_dir", type=str, default="./outputs/models", help="Where to save run folders")
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--config", type=str, default="configs/default_config.yaml")
+    p.add_argument("--data_root", type=str, default="data")
+    p.add_argument("--output_dir", type=str, default="./outputs/models")
 
-    p.add_argument("--epochs", type=int, default=None, help="Override epochs")
-    p.add_argument("--batch_size", type=int, default=None, help="Override batch size")
-    p.add_argument("--lr", type=float, default=None, help="Override learning rate")
+    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--batch_size", type=int, default=None)
+    p.add_argument("--lr", type=float, default=None)
 
     p.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "mps", "cpu"])
-    p.add_argument("--resume", type=str, default=None, help="Path to checkpoint to resume from")
+    p.add_argument("--resume", type=str, default=None)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
@@ -138,6 +135,11 @@ def validate(
 
     metrics = metrics_calc.compute()
     metrics["loss"] = loss_meter.avg
+    
+    # Return raw data for confusion matrix logging
+    metrics["targets"] = metrics_calc.targets
+    metrics["predictions"] = metrics_calc.predictions
+    
     return metrics
 
 
@@ -146,10 +148,8 @@ def main() -> None:
 
     set_seed(args.seed)
 
-    if os.path.exists(args.config):
-        config = load_config(args.config)
-    else:
-        config = get_default_config()
+    # Require config file
+    config = load_config(args.config)
 
     if args.epochs is not None:
         config.setdefault("training", {})["epochs"] = int(args.epochs)
@@ -189,8 +189,24 @@ def main() -> None:
     num_workers = int(data_cfg.get("num_workers", 0))
     pin_memory = bool(data_cfg.get("pin_memory", False))
 
+    datasets_cfg = data_cfg.get("datasets", [])
+    # Backward compatibility: if no datasets list, try old keys or use data_root
+    if not datasets_cfg:
+        if args.data_root != "data": # User specified data_root CLI arg
+             datasets_cfg.append({"type": "folder", "root": args.data_root})
+        elif data_cfg.get("dataset_type") == "rafdb":
+             datasets_cfg.append({
+                 "type": "rafdb",
+                 "root": data_cfg.get("rafdb_root", "rafdb"),
+                 "train_csv": data_cfg.get("rafdb_train_csv", "rafdb/train.csv"),
+                 "val_csv": data_cfg.get("rafdb_val_csv", "rafdb/val.csv"),
+                 "test_csv": data_cfg.get("rafdb_test_csv", "rafdb/test.csv"),
+             })
+        else: # Default fallback
+             datasets_cfg.append({"type": "folder", "root": "data"})
+
     train_loader, val_loader, test_loader = get_dataloaders(
-        data_root=args.data_root,
+        datasets_cfg=datasets_cfg,
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=pin_memory,
@@ -237,11 +253,15 @@ def main() -> None:
     
 #before starting training loop type wandb login in temrinal (this is necessary) and authenticate your account. This will allow you to track your experiments in the WandB dashboard. You can also customize the project name and run name in the wandb.init() call below.
 # Implementation of WandB for experiment tracking. Make sure to install wandb and login before running.
-    wandb.init(
-    project="fer-training", # The name can be changed to your liking, this will be the project name in your WandB dashboard
-    name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-    config=config
-)
+    use_wandb = config.get("logging", {}).get("use_wandb", False)
+    if use_wandb:
+        wandb.init(
+            project="fer-training",
+            name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=config
+        )
+        # Log model gradients and parameters
+        wandb.watch(model, log="all", log_freq=100)
 
     #Train loop:
     for epoch in range(start_epoch, epochs):
@@ -258,13 +278,21 @@ def main() -> None:
         )
         
 # these are the metrics that will be logged to WandB for each epoch. You can customize this to include any additional metrics you compute in the validate function.
-        wandb.log({
-            "epoch": epoch_id,
-            "train_loss": train_loss,
-            "train_acc": train_acc,
-            "val_loss": val_metrics["loss"],
-            "val_acc": val_metrics["accuracy"],
-        })
+        if use_wandb:
+            wandb.log({
+                "epoch": epoch_id,
+                "train_loss": train_loss,
+                "train_acc": train_acc,
+                "val_loss": val_metrics["loss"],
+                "val_acc": val_metrics["accuracy"],
+                "val_macro_f1": val_metrics["macro_f1"],
+                "conf_mat": wandb.plot.confusion_matrix(
+                    probs=None,
+                    y_true=val_metrics["targets"],
+                    preds=val_metrics["predictions"],
+                    class_names=class_names
+                )
+            })
 
         if hasattr(scheduler, "__class__") and scheduler.__class__.__name__ == "CosineAnnealingWarmRestarts":
             scheduler.step(epoch_id)
@@ -335,6 +363,9 @@ def main() -> None:
 
     if tb_writer is not None:
         tb_writer.close()
+        
+    if use_wandb:
+        wandb.finish()
 
     print(f"\nRun saved to: {run_dir}")
     print(f"Best model: {best_model_path}")

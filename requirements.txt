@@ -1,6 +1,9 @@
-
-# for dataset and transforms
 torch
 torchvision
-pillow
 numpy
+pillow
+scikit-learn
+pyyaml
+wandb
+tqdm
+opencv-python

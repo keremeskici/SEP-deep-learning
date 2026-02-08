@@ -32,22 +32,17 @@ def folder_adapter(root_dir: str) -> List[Tuple[str, int]]:
     samples: List[Tuple[str, int]] = []
 
     for folder in os.listdir(root_dir):
-        if folder.startswith("."):
-            continue
-
         folder_path = os.path.join(root_dir, folder)
         if not os.path.isdir(folder_path):
             continue
 
         canonical = to_canonical(folder)
         if canonical is None:
-            continue  # drop
+            continue
 
         label_id = canonical_to_id(canonical)
 
         for fn in os.listdir(folder_path):
-            if fn.startswith("."):
-                continue
             if not _is_image(fn):
                 continue
             samples.append((os.path.join(folder_path, fn), label_id))
@@ -84,9 +79,16 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
                 continue  # neutral/unknown -> drop
 
             label_id = canonical_to_id(canonical)
-            img_path = os.path.join(images_root, img_rel)
-            if os.path.isfile(img_path):
-                samples.append((img_path, label_id))
+            
+            # RAF-DB structure: images are in split/class_id/filename
+            if img_rel.startswith("train"):
+                img_path = os.path.join(images_root, "train", str(lab_int), img_rel)
+            elif img_rel.startswith("test"):
+                img_path = os.path.join(images_root, "test", str(lab_int), img_rel)
+            else:
+                continue
+                
+            samples.append((img_path, label_id))
 
     return samples
 
@@ -116,7 +118,6 @@ def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, in
 
             label_id = canonical_to_id(canonical)
             img_path = os.path.join(images_root, pth)
-            if os.path.isfile(img_path):
-                samples.append((img_path, label_id))
+            samples.append((img_path, label_id))
 
     return samples

@@ -96,5 +96,26 @@ def load_model_for_inference(filepath: str, model: nn.Module, device: str = "cpu
         model.load_state_dict(ckpt)
 
     model.to(device)
+    model.to(device)
+    model.eval()
+    return model
+
+
+def load_model_from_checkpoint(filepath: str, device: str = "cpu") -> nn.Module:
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Checkpoint not found: {filepath}")
+
+    ckpt = torch.load(filepath, map_location=device)
+    config = ckpt.get("config", {})
+    
+    from models import build_model
+    model = build_model(config)
+    
+    if "model_state_dict" in ckpt:
+        model.load_state_dict(ckpt["model_state_dict"])
+    else:
+        model.load_state_dict(ckpt)
+        
+    model.to(device)
     model.eval()
     return model
