@@ -49,6 +49,7 @@ def folder_adapter(root_dir: str) -> List[Tuple[str, int]]:
 
     return samples
 
+
 # RAF-Adapter
 def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
     samples: List[Tuple[str, int]] = []
@@ -74,12 +75,22 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
 
             label_id = canonical_to_id(canonical)
 
+            # normalize path (csv may contain backslashes)
             img_rel = str(img_rel).strip().lstrip("/\\").replace("\\", "/")
-            img_path = os.path.join(images_root, img_rel)
 
-            if not os.path.exists(img_path):
+            # try 1: csv already contains label folder (e.g. "1/xxx.jpg") or direct relative path
+            cand1 = os.path.join(images_root, img_rel)
+
+            # try 2: label folder inferred from label id (e.g. ".../train/1/xxx.jpg")
+            cand2 = os.path.join(images_root, str(lab_int), img_rel)
+
+            if os.path.exists(cand1):
+                img_path = cand1
+            elif os.path.exists(cand2):
+                img_path = cand2
+            else:
                 missing += 1
-                continue
+                continue  # <-- continue only if both candidates are missing
 
             samples.append((img_path, label_id))
             kept += 1
@@ -89,32 +100,55 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
 
 # AffectNet Adapter
 def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
-    """
-    AffectNet CSV (typical: pth,label):
-      pth,label
-      10000003.jpg,Happy
-      10000004.jpg,Neutral
-      We use Columns: pth (or path or image), label
-       - label is a string that maps to a canonical class via to_canonical (using ALIASES)
-       - unknown labels will be dropped
-    """
     samples: List[Tuple[str, int]] = []
+    missing = 0
+    kept = 0
+    dropped = 0
 
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
+
         for row in reader:
             pth = row.get("pth") or row.get("path") or row.get("image")
             lbl = row.get("label")
+
+            # fallback for csvs that accidentally contain an index column:
+            # row looks like: pth="0", label="anger/image....jpg", relFCs="surprise"
+            if pth is not None and str(pth).isdigit():
+                maybe_path = row.get("label")
+                maybe_label = row.get("relFCs")
+                if maybe_path and ("/" in maybe_path) and (".jpg" in maybe_path or ".png" in maybe_path):
+                    pth = maybe_path
+                    lbl = maybe_label
+
             if pth is None or lbl is None:
+                dropped += 1
                 continue
 
             canonical = to_canonical(str(lbl))
             if canonical is None:
-                continue  # drop
+                dropped += 1
+                continue
 
             label_id = canonical_to_id(canonical)
-            img_path = os.path.join(images_root, str(pth).strip().lstrip("/\\").replace("\\", "/"))
-            if os.path.exists(img_path):
-                samples.append((img_path, label_id))
+            pth_clean = str(pth).strip().lstrip("/\\").replace("\\", "/")
 
+            img_path = os.path.join(images_root, pth_clean)
+
+            if not os.path.exists(img_path):
+                img_path_train = os.path.join(images_root, "Train", pth_clean)
+                img_path_test  = os.path.join(images_root, "Test", pth_clean)
+
+                if os.path.exists(img_path_train):
+                    img_path = img_path_train
+                elif os.path.exists(img_path_test):
+                    img_path = img_path_test
+                else:
+                    missing += 1
+                    continue
+
+            samples.append((img_path, label_id))
+            kept += 1
+
+    print(f"[AffectNet adapter] kept={kept} missing_files={missing} dropped={dropped} from {csv_path}")
     return samples
