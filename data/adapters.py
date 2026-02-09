@@ -49,24 +49,18 @@ def folder_adapter(root_dir: str) -> List[Tuple[str, int]]:
 
     return samples
 
+# RAF-Adapter
 def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
-    """
-    RAF-DB CSV (typical: image,label):
-      image,label
-      anger/image0000006.jpg,1
-      anger/image0000060.jpg,6
-      We use Columns: image, label
-       - label is an integer that maps to a canonical class via RAF_ID_TO_CANONICAL
-       - neutral (7) will be dropped since it is not part of our 6 classes
-    """
     samples: List[Tuple[str, int]] = []
+    missing = 0
+    kept = 0
 
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            img_rel = row.get("image")
+            img_rel = row.get("image") or row.get("path") or row.get("filename")
             lab_raw = row.get("label")
-            if img_rel is None or lab_raw is None:
+            if not img_rel or lab_raw is None:
                 continue
 
             try:
@@ -76,22 +70,24 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
 
             canonical = RAF_ID_TO_CANONICAL.get(lab_int, None)
             if canonical is None:
-                continue  # neutral/unknown -> drop
+                continue
 
             label_id = canonical_to_id(canonical)
-            
-            # RAF-DB structure: images are in split/class_id/filename
-            if img_rel.startswith("train"):
-                img_path = os.path.join(images_root, "train", str(lab_int), img_rel)
-            elif img_rel.startswith("test"):
-                img_path = os.path.join(images_root, "test", str(lab_int), img_rel)
-            else:
-                continue
-                
-            samples.append((img_path, label_id))
 
+            img_rel = str(img_rel).strip().lstrip("/\\").replace("\\", "/")
+            img_path = os.path.join(images_root, img_rel)
+
+            if not os.path.exists(img_path):
+                missing += 1
+                continue
+
+            samples.append((img_path, label_id))
+            kept += 1
+
+    print(f"[RAFDB adapter] kept={kept} missing_files={missing} from {csv_path}")
     return samples
 
+# AffectNet Adapter
 def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
     """
     AffectNet CSV (typical: pth,label):
@@ -117,7 +113,8 @@ def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, in
                 continue  # drop
 
             label_id = canonical_to_id(canonical)
-            img_path = os.path.join(images_root, pth)
-            samples.append((img_path, label_id))
+            img_path = os.path.join(images_root, str(pth).strip().lstrip("/\\").replace("\\", "/"))
+            if os.path.exists(img_path):
+                samples.append((img_path, label_id))
 
     return samples

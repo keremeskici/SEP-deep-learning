@@ -1,0 +1,45 @@
+# sweep.yaml defines which hyperparameters can vary and how
+# right now the following parameters are variable:
+# learning rate from optimizer, batch size, training epochs
+# you can enable more if you like
+
+program: train.py
+method: bayes   # oder: random, grid
+metric:
+  name: val_macro_f1
+  goal: maximize
+
+parameters:
+  lr:
+    distribution: log_uniform_values
+    min: 0.00001
+    max: 0.01
+
+# to find a fitting batch size
+  batch_size:
+    values: [32, 64, 128]
+
+# to find fitting epochs
+  epochs:
+    values: [20, 30, 50]
+
+  optimizer:
+    values: ["adam", "sgd"]
+
+  weight_decay:
+    distribution: log_uniform_values
+    min: 0.0000001
+    max: 0.001
+
+command:
+  - ${env}
+  - python
+  - train.py
+  - --config
+  - configs/default_config.yaml
+  - --lr
+  - ${lr}
+  - --batch_size
+  - ${batch_size}
+  - --epochs
+  - ${epochs}

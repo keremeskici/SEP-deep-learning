@@ -154,7 +154,8 @@ def main() -> None:
     if args.epochs is not None:
         config.setdefault("training", {})["epochs"] = int(args.epochs)
     if args.batch_size is not None:
-        config.setdefault("data", {})["batch_size"] = int(args.batch_size)
+        config.setdefault("dataloader", {})["batch_size"] = int(args.batch_size)
+        config["dataloader"]["eval_batch_size"] = int(args.batch_size)
     if args.lr is not None:
         config.setdefault("training", {}).setdefault("optimizer", {})["lr"] = float(args.lr)
 
@@ -184,47 +185,41 @@ def main() -> None:
         except Exception:
             tb_writer = None
 
-    data_cfg = config.get("data", {})
-    batch_size = int(data_cfg.get("batch_size", 64))
-    num_workers = int(data_cfg.get("num_workers", 0))
-    pin_memory = bool(data_cfg.get("pin_memory", False))
+#before starting training loop type wandb login in temrinal (this is necessary) and authenticate your account
+# This will allow you to track your experiments in the WandB dashboard
+# You can also customize the project name and run name in the wandb.init() call below
+# Implementation of WandB for experiment tracking. Make sure to install wandb and login before running
 
-    datasets_cfg = data_cfg.get("datasets", [])
-    # Backward compatibility: if no datasets list, try old keys or use data_root
-    if not datasets_cfg:
-        if args.data_root != "data": # User specified data_root CLI arg
-             datasets_cfg.append({"type": "folder", "root": args.data_root})
-        elif data_cfg.get("dataset_type") == "rafdb":
-             datasets_cfg.append({
-                 "type": "rafdb",
-                 "root": data_cfg.get("rafdb_root", "rafdb"),
-                 "train_csv": data_cfg.get("rafdb_train_csv", "rafdb/train.csv"),
-                 "val_csv": data_cfg.get("rafdb_val_csv", "rafdb/val.csv"),
-                 "test_csv": data_cfg.get("rafdb_test_csv", "rafdb/test.csv"),
-             })
-        else: # Default fallback
-             datasets_cfg.append({"type": "folder", "root": "data"})
+    use_wandb = config.get("logging", {}).get("use_wandb", False)
+    if use_wandb:
+        wandb_cfg = config.get("logging", {}).get("wandb", {})
 
-    train_loader, val_loader, test_loader = get_dataloaders(
-        datasets_cfg=datasets_cfg,
-        batch_size=batch_size,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=True,
-        seed=int(args.seed),
-    )
+        wandb.init(
+            entity=wandb_cfg.get("entity", "SEP-deep-learning"),
+            project=wandb_cfg.get("project", "fer-training"),
+            name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            config=config,
+        )
+        # important for sweeps:
+        config.update(dict(wandb.config))
+
+    # call new dataloader
+    train_loader, val_loader, test_loader = get_dataloaders(config)
+
+    # build model
+    model = build_model(config).to(device)
+
+    if use_wandb:
+        wandb.watch(model, log="all", log_freq=100) 
 
     class_names = getattr(train_loader.dataset, "classes_list", None)
     if not class_names:
-        class_names = config.get("classes", ["happiness", "surprise", "sadness", "anger", "disgust", "fear"])
+        class_names = config.get("classes", ["anger","fear","disgust","sadness","happiness","surprise"])
 
     train_labels = extract_labels_from_dataset(train_loader.dataset)
     print_class_distribution(train_labels, class_names, num_classes=len(class_names))
 
     class_weights = compute_class_weights(train_labels, num_classes=len(class_names))
-
-    model = build_model(config)
-    model = model.to(device)
 
     criterion = get_loss_function(config, class_weights=class_weights, device=device.type)
     optimizer = get_optimizer(model, config)
@@ -251,17 +246,6 @@ def main() -> None:
     log_interval = int(config.get("logging", {}).get("log_interval", 10))
     save_interval = int(config.get("checkpoint", {}).get("save_interval", 5))
     
-#before starting training loop type wandb login in temrinal (this is necessary) and authenticate your account. This will allow you to track your experiments in the WandB dashboard. You can also customize the project name and run name in the wandb.init() call below.
-# Implementation of WandB for experiment tracking. Make sure to install wandb and login before running.
-    use_wandb = config.get("logging", {}).get("use_wandb", False)
-    if use_wandb:
-        wandb.init(
-            project="fer-training",
-            name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-            config=config
-        )
-        # Log model gradients and parameters
-        wandb.watch(model, log="all", log_freq=100)
 
     #Train loop:
     for epoch in range(start_epoch, epochs):
@@ -277,7 +261,8 @@ def main() -> None:
             model, val_loader, criterion, device, class_names, epoch_id
         )
         
-# these are the metrics that will be logged to WandB for each epoch. You can customize this to include any additional metrics you compute in the validate function.
+# these are the metrics that will be logged to WandB for each epoch
+# You can customize this to include any additional metrics you compute in the validate function
         if use_wandb:
             wandb.log({
                 "epoch": epoch_id,

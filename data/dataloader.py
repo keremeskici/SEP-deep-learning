@@ -13,15 +13,13 @@ from __future__ import annotations
 
 import os
 import random
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-from torchvision import transforms
 from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
 
-from data.dataset import FER_Dataset
+from data.dataset import FER_SamplesPILDataset
 from data.transforms import get_train_transforms, get_val_transforms, get_test_transforms
 from data.adapters import folder_adapter, rafdb_csv_adapter, affectnet_csv_adapter
 from data.calculate_mean_std import compute_mean_std
@@ -178,7 +176,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled) == 0:
             raise RuntimeError(f"FER enabled, aber 0 Samples gefunden unter {fer_root}.")
 
-        full_datasets.append(FER_Dataset(pooled, transform=None))
+        full_datasets.append(FER_SamplesPILDataset(pooled))
 
     # RAF-DB CSV
     raf = data_cfg.get("rafdb", {})
@@ -197,7 +195,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled) == 0:
             raise RuntimeError("RAF-DB enabled, aber 0 Samples nach Adapter gefunden (Pfade/CSV/Labels prüfen).")
 
-        full_datasets.append(FER_Dataset(pooled, transform=None))
+        full_datasets.append(FER_SamplesPILDataset(pooled))
 
     # AffectNet CSV
     aff = data_cfg.get("affectnet", {})
@@ -216,7 +214,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled) == 0:
             raise RuntimeError("AffectNet enabled, aber 0 Samples nach Adapter gefunden (Pfade/CSV/Labels prüfen).")
 
-        full_datasets.append(FER_Dataset(pooled, transform=None))
+        full_datasets.append(FER_SamplesPILDataset(pooled))
 
     if len(full_datasets) == 0:
         raise RuntimeError("Kein Dataset aktiviert. Setze cfg.data.<name>.enabled=True.")
