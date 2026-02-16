@@ -191,6 +191,8 @@ def main() -> None:
 # Implementation of WandB for experiment tracking. Make sure to install wandb and login before running
 
     use_wandb = config.get("logging", {}).get("use_wandb", False)
+    is_sweep_run = False  # default for non-wandb runs
+
     if use_wandb:
         wandb_cfg = config.get("logging", {}).get("wandb", {})
 
@@ -200,8 +202,13 @@ def main() -> None:
             name=f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             config=config,
         )
+
         # important for sweeps:
         config.update(dict(wandb.config))
+
+        # detect sweep AFTER init (robust via env var)
+        is_sweep_run = bool(os.getenv("WANDB_SWEEP_ID"))
+        print(f"[W&B] sweep_run={is_sweep_run}")
 
     # call new dataloader
     train_loader, val_loader, test_loader = get_dataloaders(config)
@@ -339,16 +346,42 @@ def main() -> None:
             break
 
     best_model_path = get_checkpoint_path(str(ckpt_dir), best=True)
-    if os.path.exists(best_model_path):
-        load_checkpoint(best_model_path, model, device=device.type)
+    
+    # now test accuracy, f1, and confusion matrix will also be logged to WandB for the final test evaluation, and the final numbers will be shown at the top of the run page for easy comparison between runs
 
-    print("\nFinal evaluation on test set:")
-    test_metrics = validate(model, test_loader, criterion, device, class_names, epoch=0)
-    print_metrics(test_metrics)
+    if not is_sweep_run:
+        if os.path.exists(best_model_path):
+            load_checkpoint(best_model_path, model, device=device.type)
 
+        print("\nFinal evaluation on test set:")
+        test_metrics = validate(model, test_loader, criterion, device, class_names, epoch=0)
+        print_metrics(test_metrics)
+
+        if use_wandb:
+            wandb.log({
+                "test_loss": test_metrics["loss"],
+                "test_acc": test_metrics["accuracy"],
+                "test_macro_f1": test_metrics["macro_f1"],
+            })
+
+            wandb.log({
+                "test_conf_mat": wandb.plot.confusion_matrix(
+                    probs=None,
+                    y_true=test_metrics["targets"],
+                    preds=test_metrics["predictions"],
+                    class_names=class_names
+                )
+            })
+
+            wandb.summary["test_acc"] = float(test_metrics["accuracy"])
+            wandb.summary["test_macro_f1"] = float(test_metrics["macro_f1"])
+
+    else:
+        print("\nSkipping final test evaluation (sweep run).")
+    
     if tb_writer is not None:
         tb_writer.close()
-        
+
     if use_wandb:
         wandb.finish()
 

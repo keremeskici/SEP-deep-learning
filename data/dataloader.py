@@ -16,6 +16,10 @@
 # Then every set chooses the right augmentation from transforms.py
 # Also mean/std is computed ONLY on the training subset
 
+# IMPORTANT ADDITION:
+# - optional selection of validation dataset(s) (e.g. only RAF-DB, or only FER, or both, or all)
+# - if a chosen dataset has no official test set, we create a holdout from its training pool and remove it from training (no leakage) -> this allows us to still evaluate on that dataset even without an official test set, and to control the mix ratio of that dataset in validation by controlling the holdout ratio and thus the number of eval samples from that dataset
+
 
 from __future__ import annotations
 
@@ -100,6 +104,34 @@ def _maybe_limit(samples: List[IMG_SAMPLE], limit: Optional[int], seed: int) -> 
     return [samples[i] for i in idxs]
 
 
+def _split_samples_for_eval(
+    samples: List[IMG_SAMPLE],
+    seed: int,
+    holdout_ratio: float,
+) -> Tuple[List[IMG_SAMPLE], List[IMG_SAMPLE]]:
+    """
+    If a dataset has NO official test set (e.g. AffectNet often in our setup),
+    we can still evaluate on it without leakage by holding out a deterministic subset
+    from its TRAIN-POOL and removing it from training.
+
+    returns: (train_keep, eval_holdout)
+    """
+    n = len(samples)
+    n_eval = int(n * holdout_ratio)
+    n_train = n - n_eval
+    if n_eval <= 0 or n_train <= 0:
+        raise RuntimeError(f"Dataset too small for holdout split: n={n}, holdout_ratio={holdout_ratio}")
+
+    rng = random.Random(seed)
+    idxs = list(range(n))
+    rng.shuffle(idxs)
+
+    eval_idxs = set(idxs[:n_eval])
+    eval_holdout = [samples[i] for i in range(n) if i in eval_idxs]
+    train_keep = [samples[i] for i in range(n) if i not in eval_idxs]
+    return train_keep, eval_holdout
+
+
 # Main entry for the dataloader
 def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
@@ -118,6 +150,28 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
       "data": {
         "val_ratio": 0.15,
 
+        # NEW (optional): choose on which dataset(s) validation (= "eval during training") runs.
+        # - default behavior (if missing): val is a split from the mixed TRAIN-POOL (like now)
+        # - if you set "datasets": ["rafdb", "fer"] then val will be built from those datasets
+        #   (prefer official test split; if missing, we make a holdout split from that dataset's TRAIN-POOL)
+        #
+        # examples:
+        #   eval:
+        #     datasets: ["rafdb"]                # only RAF-DB
+        #   eval:
+        #     datasets: ["fer"]                  # only FER
+        #   eval:
+        #     datasets: ["affectnet"]            # only AffectNet
+        #   eval:
+        #     datasets: ["rafdb", "fer"]         # RAF-DB + FER
+        #   eval:
+        #     datasets: ["affectnet", "fer"]     # AffectNet + FER
+        #   eval:
+        #     datasets: ["affectnet", "rafdb"]   # AffectNet + RAF-DB
+        #
+        # (optional) if a chosen dataset has no official test pool:
+        #   holdout_ratio: 0.15   # defaults to val_ratio
+        #
         "fer": {
           "enabled": True,
           "root": "/path/to/FER-2013",
@@ -154,6 +208,17 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
     val_ratio = float(data_cfg.get("val_ratio", 0.15))
 
+    # NEW: optional selection of validation dataset(s)
+    eval_cfg = data_cfg.get("eval", {}) or {}
+    eval_datasets_cfg = eval_cfg.get("datasets", None)  # e.g. ["rafdb", "fer"] or None
+    if isinstance(eval_datasets_cfg, str):
+        # allow: "rafdb,fer"
+        eval_datasets: Optional[List[str]] = [x.strip() for x in eval_datasets_cfg.split(",") if x.strip()]
+    else:
+        eval_datasets = list(eval_datasets_cfg) if eval_datasets_cfg else None
+
+    holdout_ratio = float(eval_cfg.get("holdout_ratio", val_ratio))
+
     batch_size = int(dl_cfg.get("batch_size", 64))
     eval_batch_size = int(dl_cfg.get("eval_batch_size", batch_size))
     num_workers = int(dl_cfg.get("num_workers", 4))
@@ -162,10 +227,10 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
     drop_last = bool(dl_cfg.get("drop_last", True))
 
     # collect TRAIN datasets and TEST datasets separately (no transforms yet)
-    train_datasets: List[Dataset] = []
-    test_datasets: List[Dataset] = []
+    # (we store pools per dataset-name so that we can optionally build val from selected datasets)
+    pooled_train_by_name: Dict[str, List[IMG_SAMPLE]] = {}
+    pooled_test_by_name: Dict[str, List[IMG_SAMPLE]] = {}
 
-    
     # FER Folder (train/val from training(+optional validation), test from test folder)
     fer = data_cfg.get("fer", {})
     if fer.get("enabled", False):
@@ -205,13 +270,9 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled_train) == 0:
             raise RuntimeError(f"FER enabled but 0 TRAIN samples found under {fer_root}.")
 
-        train_datasets.append(FER_SamplesPILDataset(pooled_train))
+        pooled_train_by_name["fer"] = pooled_train
+        pooled_test_by_name["fer"] = pooled_test
 
-        # test is optional for FER, but recommended
-        if len(pooled_test) > 0:
-            test_datasets.append(FER_SamplesPILDataset(pooled_test))
-
-    
     # RAF-DB CSV (train from train_csvs + train_images_root, test from test_csvs + test_images_root)
     raf = data_cfg.get("rafdb", {})
     if raf.get("enabled", False):
@@ -236,11 +297,8 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled_train) == 0:
             raise RuntimeError("RAF-DB enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
 
-        train_datasets.append(FER_SamplesPILDataset(pooled_train))
-
-        # test optional, but recommended
+        pooled_test: List[IMG_SAMPLE] = []
         if test_images_root and test_csvs:
-            pooled_test: List[IMG_SAMPLE] = []
             for csv_path in test_csvs:
                 pooled_test.extend(rafdb_csv_adapter(test_images_root, csv_path))
 
@@ -250,10 +308,9 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
             if pooled_test:
                 print("[RAF] test example path:", pooled_test[0][0])
 
-            if len(pooled_test) > 0:
-                test_datasets.append(FER_SamplesPILDataset(pooled_test))
+        pooled_train_by_name["rafdb"] = pooled_train
+        pooled_test_by_name["rafdb"] = pooled_test
 
-    
     # AffectNet CSV (train_csvs and test_csvs; adapter can resolve Train/Test under images_root)
     aff = data_cfg.get("affectnet", {})
     if aff.get("enabled", False):
@@ -277,11 +334,8 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if len(pooled_train) == 0:
             raise RuntimeError("AffectNet enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
 
-        train_datasets.append(FER_SamplesPILDataset(pooled_train))
-
-        # test is optional (depends if you have labeled AffectNet test)
+        pooled_test: List[IMG_SAMPLE] = []
         if test_csvs:
-            pooled_test: List[IMG_SAMPLE] = []
             for csv_path in test_csvs:
                 pooled_test.extend(affectnet_csv_adapter(images_root, csv_path))
 
@@ -291,11 +345,71 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
             if pooled_test:
                 print("[AffectNet] test example path:", pooled_test[0][0])
 
-            if len(pooled_test) > 0:
-                test_datasets.append(FER_SamplesPILDataset(pooled_test))
+        pooled_train_by_name["affectnet"] = pooled_train
+        pooled_test_by_name["affectnet"] = pooled_test
 
-    if len(train_datasets) == 0:
+    if len(pooled_train_by_name) == 0:
         raise RuntimeError("No TRAIN dataset activated. Set cfg.data.<name>.enabled=True and provide train data.")
+
+    # Decide how to build VAL:
+    #
+    # - default: mixed val split from mixed TRAIN-POOL (same as current behavior)
+    # - if eval.datasets is set: build val from those dataset(s)
+    #     * prefer official TEST-POOL for those datasets
+    #     * if a chosen dataset has no TEST-POOL, create a holdout from its TRAIN-POOL and REMOVE it from training (no leakage)
+    eval_samples: Optional[List[IMG_SAMPLE]] = None
+    if eval_datasets is not None:
+        eval_samples = []
+
+        # normalize names
+        eval_datasets_norm = [d.strip().lower() for d in eval_datasets if str(d).strip()]
+        valid_names = set(pooled_train_by_name.keys())
+        unknown = [d for d in eval_datasets_norm if d not in valid_names]
+        if unknown:
+            raise RuntimeError(
+                f"Unknown eval dataset(s) {unknown}. Valid: {sorted(list(valid_names))}"
+            )
+
+        for name in eval_datasets_norm:
+            test_pool = pooled_test_by_name.get(name, [])
+            if test_pool:
+                # evaluate on the official test pool (best choice)
+                eval_samples.extend(test_pool)
+            else:
+                # no official test -> create a holdout from TRAIN-POOL and REMOVE it from training
+                train_pool = pooled_train_by_name.get(name, [])
+                train_keep, eval_holdout = _split_samples_for_eval(
+                    train_pool,
+                    seed=seed + 500 + hash(name) % 1000,
+                    holdout_ratio=holdout_ratio,
+                )
+                pooled_train_by_name[name] = train_keep
+                eval_samples.extend(eval_holdout)
+
+        if len(eval_samples) == 0:
+            raise RuntimeError(
+                "You selected eval.datasets, but the resulting evaluation pool is empty. "
+                "Check your dataset paths / test_csvs / holdout settings."
+            )
+
+        print(f"[EVAL] Using selected eval datasets={eval_datasets_norm} with total samples={len(eval_samples)}")
+    else:
+        print("[EVAL] Using default mixed validation split from TRAIN-POOL (like now).")
+
+    # Build TRAIN datasets (after optional holdout removal above)
+    train_datasets: List[Dataset] = []
+    for name, samples in pooled_train_by_name.items():
+        if len(samples) == 0:
+            raise RuntimeError(
+                f"Dataset '{name}' is enabled, but after eval holdout it has 0 TRAIN samples left."
+            )
+        train_datasets.append(FER_SamplesPILDataset(samples))
+
+    # Build TEST datasets (always official test pools across enabled datasets, if they exist)
+    test_datasets: List[Dataset] = []
+    for name, samples in pooled_test_by_name.items():
+        if len(samples) > 0:
+            test_datasets.append(FER_SamplesPILDataset(samples))
 
     print("[MIX] number of TRAIN datasets:", len(train_datasets))
     print("[MIX] TRAIN dataset lens:", [len(ds) for ds in train_datasets])
@@ -312,8 +426,14 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
     # concat BEFORE split because the mix of different TRAIN datasets should be considered one
     train_full = ConcatDataset(train_datasets)
 
-    # split train_full into train/val (val comes from train pool, because many datasets do not have an official val folder)
-    train_subset, val_subset = split_train_val(train_full, seed=seed, val_ratio=val_ratio)
+    # VAL: either default split from train_full OR fixed eval pool created above
+    if eval_samples is None:
+        # split train_full into train/val (val comes from train pool, because many datasets do not have an official val folder)
+        train_subset, val_subset = split_train_val(train_full, seed=seed, val_ratio=val_ratio)
+    else:
+        # no random split: train is full train_full, val is fixed pool (test or holdout)
+        train_subset = train_full
+        val_subset = FER_SamplesPILDataset(eval_samples)
 
     # official test is kept separate (no random split!)
     test_full = ConcatDataset(test_datasets)
