@@ -5,7 +5,6 @@ import numpy as np
 # GradCam implementation for the project
 # based on the paper / tutorials I found
 class GradCAM:
-    # student note: need to match the arguments the demo script sends
     def __init__(self, model, target_layer):
         self.model = model
         self.target_layer = target_layer
