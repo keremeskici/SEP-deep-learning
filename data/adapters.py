@@ -6,6 +6,9 @@ from __future__ import annotations
 import os
 import csv
 from typing import List, Tuple, Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 from data.labels import (
     RAF_ID_TO_CANONICAL,
@@ -31,6 +34,9 @@ def folder_adapter(root_dir: str) -> List[Tuple[str, int]]:
     """
     samples: List[Tuple[str, int]] = []
 
+    if not os.path.isdir(root_dir):
+        raise FileNotFoundError(f"folder_adapter: root directory not found: {root_dir}")
+
     for folder in os.listdir(root_dir):
         folder_path = os.path.join(root_dir, folder)
         if not os.path.isdir(folder_path):
@@ -45,8 +51,10 @@ def folder_adapter(root_dir: str) -> List[Tuple[str, int]]:
         for fn in os.listdir(folder_path):
             if not _is_image(fn):
                 continue
-            samples.append((os.path.join(folder_path, fn), label_id))
+            img_path = os.path.normpath(os.path.join(folder_path, fn))
+            samples.append((img_path, label_id))
 
+    logger.info(f"[folder_adapter] found {len(samples)} images under {root_dir}")
     return samples
 
 
@@ -55,6 +63,8 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
     samples: List[Tuple[str, int]] = []
     missing = 0
     kept = 0
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"RAF-DB adapter: CSV file not found: {csv_path}")
 
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -76,13 +86,13 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
             label_id = canonical_to_id(canonical)
 
             # normalize path (csv may contain backslashes)
-            img_rel = str(img_rel).strip().lstrip("/\\").replace("\\", "/")
+            img_rel = str(img_rel).strip().lstrip("/\\").replace("\\", os.sep)
 
             # try 1: csv already contains label folder (e.g. "1/xxx.jpg") or direct relative path
-            cand1 = os.path.join(images_root, img_rel)
+            cand1 = os.path.normpath(os.path.join(images_root, img_rel))
 
             # try 2: label folder inferred from label id (e.g. ".../train/1/xxx.jpg")
-            cand2 = os.path.join(images_root, str(lab_int), img_rel)
+            cand2 = os.path.normpath(os.path.join(images_root, str(lab_int), img_rel))
 
             if os.path.exists(cand1):
                 img_path = cand1
@@ -95,7 +105,7 @@ def rafdb_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, int]]:
             samples.append((img_path, label_id))
             kept += 1
 
-    print(f"[RAFDB adapter] kept={kept} missing_files={missing} from {csv_path}")
+    logger.info(f"[RAFDB adapter] kept={kept} missing_files={missing} from {csv_path}")
     return samples
 
 # AffectNet Adapter
@@ -104,6 +114,9 @@ def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, in
     missing = 0
     kept = 0
     dropped = 0
+
+    if not os.path.exists(csv_path):
+        raise FileNotFoundError(f"AffectNet adapter: CSV file not found: {csv_path}")
 
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
@@ -131,13 +144,13 @@ def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, in
                 continue
 
             label_id = canonical_to_id(canonical)
-            pth_clean = str(pth).strip().lstrip("/\\").replace("\\", "/")
+            pth_clean = str(pth).strip().lstrip("/\\").replace("\\", os.sep)
 
-            img_path = os.path.join(images_root, pth_clean)
+            img_path = os.path.normpath(os.path.join(images_root, pth_clean))
 
             if not os.path.exists(img_path):
-                img_path_train = os.path.join(images_root, "Train", pth_clean)
-                img_path_test  = os.path.join(images_root, "Test", pth_clean)
+                img_path_train = os.path.normpath(os.path.join(images_root, "Train", pth_clean))
+                img_path_test = os.path.normpath(os.path.join(images_root, "Test", pth_clean))
 
                 if os.path.exists(img_path_train):
                     img_path = img_path_train
@@ -150,5 +163,5 @@ def affectnet_csv_adapter(images_root: str, csv_path: str) -> List[Tuple[str, in
             samples.append((img_path, label_id))
             kept += 1
 
-    print(f"[AffectNet adapter] kept={kept} missing_files={missing} dropped={dropped} from {csv_path}")
+    logger.info(f"[AffectNet adapter] kept={kept} missing_files={missing} dropped={dropped} from {csv_path}")
     return samples

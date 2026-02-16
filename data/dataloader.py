@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -225,6 +226,21 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
     pin_memory = bool(dl_cfg.get("pin_memory", True))
     persistent_workers = bool(dl_cfg.get("persistent_workers", True)) and num_workers > 0
     drop_last = bool(dl_cfg.get("drop_last", True))
+
+    # ---- platform-safe dataloader settings ----
+    is_windows = platform.system() == "Windows"
+
+    if is_windows:
+        # safest defaults on Windows to avoid spawn deadlocks
+        num_workers = 0
+        pin_memory = False
+        persistent_workers = False
+    else:
+        # macOS/Linux: persistent_workers only makes sense with workers > 0
+        persistent_workers = persistent_workers and num_workers > 0
+        # pin_memory only helps when using CUDA
+        pin_memory = pin_memory and torch.cuda.is_available()
+    # ------------------------------------------
 
     # collect TRAIN datasets and TEST datasets separately (no transforms yet)
     # (we store pools per dataset-name so that we can optionally build val from selected datasets)
@@ -450,6 +466,11 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
     print("Computed TRAIN mean:", mean.tolist())
     print("Computed TRAIN std:", std.tolist())
+
+    # persist mean/std into cfg so train.py can write them into config_used.yaml
+    cfg.setdefault("data", {})
+    cfg["data"]["mean"] = mean.tolist()
+    cfg["data"]["std"] = std.tolist()
 
     # apply transforms AFTER split
     train_ds = TransformDataset(

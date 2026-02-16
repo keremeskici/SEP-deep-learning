@@ -1,4 +1,3 @@
-
 import os
 import sys
 import argparse
@@ -25,7 +24,6 @@ from utils.metrics import MetricsCalculator, AverageMeter, print_metrics
 from utils.early_stopping import EarlyStopping
 from utils.checkpoint import save_checkpoint, load_checkpoint, get_checkpoint_path
 from utils.device import get_device, print_device_info
-
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -173,10 +171,6 @@ def main() -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(run_dir / "config_used.yaml", "w", encoding="utf-8") as f:
-        import yaml
-        yaml.safe_dump(config, f, sort_keys=False)
-
     tb_writer = None
     if config.get("logging", {}).get("use_tensorboard", False):
         try:
@@ -212,6 +206,11 @@ def main() -> None:
 
     # call new dataloader
     train_loader, val_loader, test_loader = get_dataloaders(config)
+
+    # save the actually used config (now includes computed mean/std from get_dataloaders)
+    with open(run_dir / "config_used.yaml", "w", encoding="utf-8") as f:
+        import yaml
+        yaml.safe_dump(config, f, sort_keys=False)
 
     # build model
     model = build_model(config).to(device)
