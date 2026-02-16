@@ -19,7 +19,12 @@
 # IMPORTANT ADDITION:
 # - optional selection of validation dataset(s) (e.g. only RAF-DB, or only FER, or both, or all)
 # - if a chosen dataset has no official test set, we create a holdout from its training pool and remove it from training (no leakage) -> this allows us to still evaluate on that dataset even without an official test set, and to control the mix ratio of that dataset in validation by controlling the holdout ratio and thus the number of eval samples from that dataset
-
+#
+# IMPORTANT ADDITION 2 (your request):
+# - eval and test should be possible on datasets that are NOT used for training (eval_only datasets)
+# - means: a dataset can be "enabled" for evaluation only, without being part of the training mixture
+# - so eval.datasets can contain datasets that exist either in TRAIN-POOL or TEST-POOL
+# - and test_loader can optionally follow the same dataset selection as eval.datasets (so you can test only on RAF, only on FER, only on AffectNet, or mixed)
 
 from __future__ import annotations
 
@@ -111,7 +116,7 @@ def _split_samples_for_eval(
     holdout_ratio: float,
 ) -> Tuple[List[IMG_SAMPLE], List[IMG_SAMPLE]]:
     """
-    If a dataset has NO official test set (e.g. AffectNet often in our setup),
+    If a dataset has NO official test set (e.g. some setups),
     we can still evaluate on it without leakage by holding out a deterministic subset
     from its TRAIN-POOL and removing it from training.
 
@@ -131,6 +136,20 @@ def _split_samples_for_eval(
     eval_holdout = [samples[i] for i in range(n) if i in eval_idxs]
     train_keep = [samples[i] for i in range(n) if i not in eval_idxs]
     return train_keep, eval_holdout
+
+
+def _norm_dataset_list(x: Optional[Any]) -> Optional[List[str]]:
+    if x is None:
+        return None
+    if isinstance(x, str):
+        # allow: "rafdb,fer"
+        out = [p.strip().lower() for p in x.split(",") if p.strip()]
+        return out if out else None
+    try:
+        out = [str(p).strip().lower() for p in list(x) if str(p).strip()]
+        return out if out else None
+    except Exception:
+        return None
 
 
 # Main entry for the dataloader
@@ -173,8 +192,12 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         # (optional) if a chosen dataset has no official test pool:
         #   holdout_ratio: 0.15   # defaults to val_ratio
         #
+        # NEW: eval_only per dataset:
+        # - enabled=true + eval_only=true means: do NOT add it to training mixture, but allow eval/test on it
+        #
         "fer": {
           "enabled": True,
+          "eval_only": False,
           "root": "/path/to/FER-2013",
           "limit": None,
           "limit_test": None,
@@ -183,6 +206,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
         "rafdb": {
           "enabled": True,
+          "eval_only": False,
           "train_images_root": "/path/to/RAF-DB/DATASET/train",
           "test_images_root":  "/path/to/RAF-DB/DATASET/test",
           "train_csvs": ["/path/to/RAF-DB/train_labels.csv"],
@@ -193,6 +217,7 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
         "affectnet": {
           "enabled": True,
+          "eval_only": False,
           "images_root": "/path/to/AffectNet",
           "train_csvs": ["/path/to/AffectNet/labels_train.csv"],
           "test_csvs":  ["/path/to/AffectNet/labels_test.csv"],  # optional; can be []
@@ -211,14 +236,12 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
     # NEW: optional selection of validation dataset(s)
     eval_cfg = data_cfg.get("eval", {}) or {}
-    eval_datasets_cfg = eval_cfg.get("datasets", None)  # e.g. ["rafdb", "fer"] or None
-    if isinstance(eval_datasets_cfg, str):
-        # allow: "rafdb,fer"
-        eval_datasets: Optional[List[str]] = [x.strip() for x in eval_datasets_cfg.split(",") if x.strip()]
-    else:
-        eval_datasets = list(eval_datasets_cfg) if eval_datasets_cfg else None
-
+    eval_datasets = _norm_dataset_list(eval_cfg.get("datasets", None))
     holdout_ratio = float(eval_cfg.get("holdout_ratio", val_ratio))
+
+    # OPTIONAL: decide if test_loader should follow eval.datasets selection or always include all enabled test pools
+    # - default: True (most intuitive if you want "all combinations")
+    test_follow_eval = bool(eval_cfg.get("test_follow_eval", True))
 
     batch_size = int(dl_cfg.get("batch_size", 64))
     eval_batch_size = int(dl_cfg.get("eval_batch_size", batch_size))
@@ -251,23 +274,28 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
     fer = data_cfg.get("fer", {})
     if fer.get("enabled", False):
         fer_root = fer.get("root")
+        fer_eval_only = bool(fer.get("eval_only", False))
         if not fer_root:
             raise RuntimeError("cfg.data.fer.enabled=True but cfg.data.fer.root is missing.")
 
         include_validation = bool(fer.get("include_validation_in_train", True))
 
         pooled_train: List[IMG_SAMPLE] = []
-        for sub in ("training", "train"):
-            p = os.path.join(fer_root, sub)
-            if os.path.isdir(p):
-                pooled_train.extend(folder_adapter(p))
-
-        if include_validation:
-            p = os.path.join(fer_root, "validation")
-            if os.path.isdir(p):
-                pooled_train.extend(folder_adapter(p))
-
         pooled_test: List[IMG_SAMPLE] = []
+
+        # if eval_only -> don't build training pool
+        if not fer_eval_only:
+            for sub in ("training", "train"):
+                p = os.path.join(fer_root, sub)
+                if os.path.isdir(p):
+                    pooled_train.extend(folder_adapter(p))
+
+            if include_validation:
+                p = os.path.join(fer_root, "validation")
+                if os.path.isdir(p):
+                    pooled_train.extend(folder_adapter(p))
+
+        # always try to collect official test pool if present
         p = os.path.join(fer_root, "test")
         if os.path.isdir(p):
             pooled_test.extend(folder_adapter(p))
@@ -283,10 +311,14 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         if pooled_test:
             print("[FER] test example path:", pooled_test[0][0])
 
-        if len(pooled_train) == 0:
+        if len(pooled_train) == 0 and not fer_eval_only:
             raise RuntimeError(f"FER enabled but 0 TRAIN samples found under {fer_root}.")
 
-        pooled_train_by_name["fer"] = pooled_train
+        if fer_eval_only and len(pooled_test) == 0:
+            raise RuntimeError(f"FER eval_only=True but 0 TEST samples found under {os.path.join(fer_root,'test')}.")
+
+        if not fer_eval_only:
+            pooled_train_by_name["fer"] = pooled_train
         pooled_test_by_name["fer"] = pooled_test
 
     # RAF-DB CSV (train from train_csvs + train_images_root, test from test_csvs + test_images_root)
@@ -296,24 +328,35 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         test_images_root = raf.get("test_images_root")
         train_csvs = raf.get("train_csvs", [])
         test_csvs = raf.get("test_csvs", [])
-
-        if not train_images_root or not train_csvs:
-            raise RuntimeError("cfg.data.rafdb.enabled=True but train_images_root or train_csvs missing.")
+        raf_eval_only = bool(raf.get("eval_only", False))
 
         pooled_train: List[IMG_SAMPLE] = []
-        for csv_path in train_csvs:
-            pooled_train.extend(rafdb_csv_adapter(train_images_root, csv_path))
-
-        pooled_train = _maybe_limit(pooled_train, raf.get("limit"), seed=seed + 1)
-
-        print(f"[RAF] train pooled after limit: {len(pooled_train)} (train_images_root={train_images_root})")
-        if pooled_train:
-            print("[RAF] train example path:", pooled_train[0][0])
-
-        if len(pooled_train) == 0:
-            raise RuntimeError("RAF-DB enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
-
         pooled_test: List[IMG_SAMPLE] = []
+
+        if raf_eval_only:
+            # eval-only: require a test pool definition
+            if not test_images_root or not test_csvs:
+                raise RuntimeError("cfg.data.rafdb.eval_only=True requires test_images_root and test_csvs to be set.")
+        else:
+            # training mode: require training definition
+            if not train_images_root or not train_csvs:
+                raise RuntimeError("cfg.data.rafdb.enabled=True but train_images_root or train_csvs missing.")
+
+        # build train pool only if not eval-only
+        if not raf_eval_only:
+            for csv_path in train_csvs:
+                pooled_train.extend(rafdb_csv_adapter(train_images_root, csv_path))
+
+            pooled_train = _maybe_limit(pooled_train, raf.get("limit"), seed=seed + 1)
+
+            print(f"[RAF] train pooled after limit: {len(pooled_train)} (train_images_root={train_images_root})")
+            if pooled_train:
+                print("[RAF] train example path:", pooled_train[0][0])
+
+            if len(pooled_train) == 0:
+                raise RuntimeError("RAF-DB enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
+
+        # build test pool if available
         if test_images_root and test_csvs:
             for csv_path in test_csvs:
                 pooled_test.extend(rafdb_csv_adapter(test_images_root, csv_path))
@@ -324,7 +367,11 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
             if pooled_test:
                 print("[RAF] test example path:", pooled_test[0][0])
 
-        pooled_train_by_name["rafdb"] = pooled_train
+        if raf_eval_only and len(pooled_test) == 0:
+            raise RuntimeError("RAF-DB eval_only=True but 0 TEST samples after adapter (check test paths/CSV).")
+
+        if not raf_eval_only:
+            pooled_train_by_name["rafdb"] = pooled_train
         pooled_test_by_name["rafdb"] = pooled_test
 
     # AffectNet CSV (train_csvs and test_csvs; adapter can resolve Train/Test under images_root)
@@ -333,35 +380,52 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
         images_root = aff.get("images_root")
         train_csvs = aff.get("train_csvs", [])
         test_csvs = aff.get("test_csvs", [])
-
-        if not images_root or not train_csvs:
-            raise RuntimeError("cfg.data.affectnet.enabled=True but images_root or train_csvs missing.")
+        aff_eval_only = bool(aff.get("eval_only", False))
 
         pooled_train: List[IMG_SAMPLE] = []
-        for csv_path in train_csvs:
-            pooled_train.extend(affectnet_csv_adapter(images_root, csv_path))
-
-        pooled_train = _maybe_limit(pooled_train, aff.get("limit"), seed=seed + 2)
-
-        print(f"[AffectNet] train pooled after limit: {len(pooled_train)} (images_root={images_root})")
-        if pooled_train:
-            print("[AffectNet] train example path:", pooled_train[0][0])
-
-        if len(pooled_train) == 0:
-            raise RuntimeError("AffectNet enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
-
         pooled_test: List[IMG_SAMPLE] = []
+
+        if not images_root:
+            raise RuntimeError("cfg.data.affectnet.enabled=True but images_root is missing.")
+
+        # IMPORTANT: AffectNet is usually CSV-driven (flat images + labels in CSV)
+        # so for eval_only we REQUIRE test_csvs (no folder_adapter fallback here to avoid wrong labels)
+        if aff_eval_only:
+            if not test_csvs:
+                raise RuntimeError("cfg.data.affectnet.eval_only=True requires test_csvs to be set (CSV-driven eval).")
+        else:
+            if not train_csvs:
+                raise RuntimeError("cfg.data.affectnet.enabled=True but train_csvs missing (or set eval_only=true).")
+
+        # build test pool if provided (also useful in training mode)
         if test_csvs:
             for csv_path in test_csvs:
                 pooled_test.extend(affectnet_csv_adapter(images_root, csv_path))
-
             pooled_test = _maybe_limit(pooled_test, aff.get("limit_test"), seed=seed + 102)
 
             print(f"[AffectNet] test pooled after limit: {len(pooled_test)} (images_root={images_root})")
             if pooled_test:
                 print("[AffectNet] test example path:", pooled_test[0][0])
 
-        pooled_train_by_name["affectnet"] = pooled_train
+        # build train pool only when not eval-only
+        if not aff_eval_only:
+            for csv_path in train_csvs:
+                pooled_train.extend(affectnet_csv_adapter(images_root, csv_path))
+
+            pooled_train = _maybe_limit(pooled_train, aff.get("limit"), seed=seed + 2)
+
+            print(f"[AffectNet] train pooled after limit: {len(pooled_train)} (images_root={images_root})")
+            if pooled_train:
+                print("[AffectNet] train example path:", pooled_train[0][0])
+
+            if len(pooled_train) == 0:
+                raise RuntimeError("AffectNet enabled, but 0 TRAIN samples after adapter (check paths/CSV/labels).")
+
+        if aff_eval_only and len(pooled_test) == 0:
+            raise RuntimeError("AffectNet eval_only=True but 0 TEST samples after adapter (check test_csvs).")
+
+        if not aff_eval_only:
+            pooled_train_by_name["affectnet"] = pooled_train
         pooled_test_by_name["affectnet"] = pooled_test
 
     if len(pooled_train_by_name) == 0:
@@ -374,33 +438,39 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
     #     * prefer official TEST-POOL for those datasets
     #     * if a chosen dataset has no TEST-POOL, create a holdout from its TRAIN-POOL and REMOVE it from training (no leakage)
     eval_samples: Optional[List[IMG_SAMPLE]] = None
+    eval_datasets_norm: Optional[List[str]] = None
+
     if eval_datasets is not None:
         eval_samples = []
-
-        # normalize names
         eval_datasets_norm = [d.strip().lower() for d in eval_datasets if str(d).strip()]
-        valid_names = set(pooled_train_by_name.keys())
+
+        # allow eval on datasets that appear either in TRAIN or TEST pools
+        valid_names = set(pooled_train_by_name.keys()) | set(pooled_test_by_name.keys())
         unknown = [d for d in eval_datasets_norm if d not in valid_names]
         if unknown:
-            raise RuntimeError(
-                f"Unknown eval dataset(s) {unknown}. Valid: {sorted(list(valid_names))}"
-            )
+            raise RuntimeError(f"Unknown eval dataset(s) {unknown}. Valid: {sorted(list(valid_names))}")
 
         for name in eval_datasets_norm:
             test_pool = pooled_test_by_name.get(name, [])
+            train_pool = pooled_train_by_name.get(name, [])
+
             if test_pool:
                 # evaluate on the official test pool (best choice)
                 eval_samples.extend(test_pool)
-            else:
+            elif train_pool:
                 # no official test -> create a holdout from TRAIN-POOL and REMOVE it from training
-                train_pool = pooled_train_by_name.get(name, [])
                 train_keep, eval_holdout = _split_samples_for_eval(
                     train_pool,
-                    seed=seed + 500 + hash(name) % 1000,
+                    seed=seed + 500 + (hash(name) % 1000),
                     holdout_ratio=holdout_ratio,
                 )
                 pooled_train_by_name[name] = train_keep
                 eval_samples.extend(eval_holdout)
+            else:
+                # neither test nor train pool available for this dataset
+                raise RuntimeError(
+                    f"Eval dataset '{name}' has no test pool and is not present in the train pool."
+                )
 
         if len(eval_samples) == 0:
             raise RuntimeError(
@@ -421,11 +491,18 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
             )
         train_datasets.append(FER_SamplesPILDataset(samples))
 
-    # Build TEST datasets (always official test pools across enabled datasets, if they exist)
+    # Build TEST datasets
+    # IMPORTANT: if eval.datasets is set and test_follow_eval=True, test_loader will match those datasets
     test_datasets: List[Dataset] = []
-    for name, samples in pooled_test_by_name.items():
-        if len(samples) > 0:
-            test_datasets.append(FER_SamplesPILDataset(samples))
+    if test_follow_eval and eval_datasets_norm is not None:
+        for name in eval_datasets_norm:
+            samples = pooled_test_by_name.get(name, [])
+            if len(samples) > 0:
+                test_datasets.append(FER_SamplesPILDataset(samples))
+    else:
+        for name, samples in pooled_test_by_name.items():
+            if len(samples) > 0:
+                test_datasets.append(FER_SamplesPILDataset(samples))
 
     print("[MIX] number of TRAIN datasets:", len(train_datasets))
     print("[MIX] TRAIN dataset lens:", [len(ds) for ds in train_datasets])
@@ -433,7 +510,10 @@ def get_dataloaders(cfg: Dict[str, Any]) -> Tuple[DataLoader, DataLoader, DataLo
 
     if len(test_datasets) == 0:
         # you can decide to allow this, but most training scripts expect a test_loader
-        raise RuntimeError("No TEST dataset found/activated. Provide test data or adapt evaluation.")
+        raise RuntimeError(
+            "No TEST dataset found/activated for the current selection. "
+            "Provide test data or set data.eval.test_follow_eval=false."
+        )
 
     print("[MIX] number of TEST datasets:", len(test_datasets))
     print("[MIX] TEST dataset lens:", [len(ds) for ds in test_datasets])
