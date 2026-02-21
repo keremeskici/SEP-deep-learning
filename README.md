@@ -67,9 +67,15 @@ Press 'q' to quit the webcam window.
 
 ### Batch Demo
 
-If you have a folder of images you want to classify, use the demo script. It runs the model on all images in the folder and saves the results to "scripts/predictions.csv".
+If you have a folder of images you want to classify, use the demo script. It runs the model on all images in the folder and saves the results to "outputs/predictions.csv".
 
 python scripts/demo.py path_to_your_image_folder --model_path outputs/models/run_XX/checkpoints/best_model.pth
+
+### Video Demo
+
+You can process a video file to classify emotions frame-by-frame. The script will output a new video overlaid with emotion classifications, confidence levels, and saliency maps (Grad-CAM) showing the important regions. It generates the output video directly inside the `outputs` directory.
+
+python scripts/video_demo.py --video_path inputs/my_video.mp4 --model_path outputs/models/run_XX/checkpoints/best_model.pth
 
 ## Code Structure
 

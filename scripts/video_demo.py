@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import sys
 import argparse
 from pathlib import Path
@@ -9,7 +8,6 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-# add project root
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -18,10 +16,8 @@ from utils.checkpoint import load_model_from_checkpoint
 from utils.gradcam import GradCAM
 from utils.device import get_device
 
-# emotion classes
 CLASS_NAMES = ['happiness', 'surprise', 'sadness', 'anger', 'disgust', 'fear']
 
-# colors for each emotion (BGR)
 EMOTION_COLORS = {
     'happiness': (0, 215, 255),
     'surprise': (0, 165, 255),
@@ -190,7 +186,7 @@ def draw_results(frame, emotion, confidence, probabilities, heatmap, roi, alpha=
     
     # draw quit instruction
     cv2.putText(
-        output, "Press 'q' to quit", (10, h - 10),
+        output, "Processing video... Press 'q' to quit early", (10, h - 10),
         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (120, 120, 120), 1
     )
     
@@ -198,7 +194,8 @@ def draw_results(frame, emotion, confidence, probabilities, heatmap, roi, alpha=
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, required=True)
+    parser.add_argument('--video_path', type=str, required=True, help='Path to input video')
+    parser.add_argument('--model_path', type=str, required=True, help='Path to model checkpoint')
     parser.add_argument('--device', type=str, default='auto')
     args = parser.parse_args()
     
@@ -216,7 +213,6 @@ def main():
     gradcam = GradCAM(model, target_layer=model.layer4)
     
     # setup transform
-    # setup transform
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
     transform = get_test_transforms(mean, std)
@@ -224,19 +220,39 @@ def main():
     # setup face detector
     face_detector = FaceDetector()
     
-    # open webcam
-    cap = cv2.VideoCapture(0)
+    # open video
+    video_path = Path(args.video_path)
+    cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
-        print("Error: Could not open webcam")
+        print(f"Error: Could not open video {args.video_path}")
         return
     
-    print("Starting webcam. Press 'q' to quit.")
+    # setup output directory
+    output_dir = PROJECT_ROOT / 'outputs'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = str(output_dir / f"{video_path.stem}_demo.mp4")
     
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Processing video: {args.video_path} ({total_frames} frames)")
+    print(f"Saving to: {output_path}")
+    print("Starting video processing. Press 'q' to quit early.")
+    
+    frame_count = 0
     # main loop
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+            
+        frame_count += 1
+        if frame_count % 10 == 0:
+            print(f"Processing frame {frame_count}/{total_frames}")
         
         # detect face
         roi = face_detector.detect(frame)
@@ -266,8 +282,11 @@ def main():
         # draw results
         output = draw_results(frame, emotion, confidence, probabilities, heatmap, roi)
         
+        # save frame
+        out.write(output)
+        
         # show frame
-        cv2.imshow('Emotion Recognition', output)
+        cv2.imshow('Emotion Recognition Video Demo', output)
         
         # check for quit
         key = cv2.waitKey(1) & 0xFF
@@ -276,6 +295,7 @@ def main():
     
     # cleanup
     cap.release()
+    out.release()
     cv2.destroyAllWindows()
     gradcam.remove_hooks()
     print("Done.")
