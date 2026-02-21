@@ -222,7 +222,7 @@ def draw_results(frame, emotion, confidence, probabilities, heatmap, roi, alpha=
 
     return output
 
-# Main entry point
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--model_path', type=str, required=True)
@@ -246,16 +246,6 @@ def main():
 
     # setup gradcam
     gradcam = GradCAM(model, target_layer=model.layer4)
-<<<<<<< HEAD
-    
-    # setup transform
-    # setup transform
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
-    transform = get_test_transforms(mean, std)
-    
-    # setup face detector
-=======
 
     # build transform with SAME normalization as training
     run_dir = infer_run_dir_from_model_path(args.model_path)
@@ -275,7 +265,6 @@ def main():
     transform = get_test_transforms(mean=mean, std=std)
 
     # face detector
->>>>>>> c69ac3b (Webcam Demo takes mean and std from saved config)
     face_detector = FaceDetector()
 
     # open webcam
@@ -295,11 +284,11 @@ def main():
         roi = face_detector.detect(frame)
 
         input_tensor = preprocess_frame(frame, transform, roi).to(device)
-        # inference
+
         with torch.no_grad():
             logits = model(input_tensor)
             probs = F.softmax(logits, dim=1)[0]
-        # get predicted emotion and confidence
+
         pred_idx = int(probs.argmax().item())
         confidence = float(probs[pred_idx].item())
         emotion = CLASS_NAMES[pred_idx]
