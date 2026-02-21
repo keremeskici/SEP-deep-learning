@@ -25,7 +25,7 @@ from utils.gradcam import GradCAM
 from utils.device import get_device
 
 # emotion classes
-CLASS_NAMES = ['happiness', 'surprise', 'sadness', 'anger', 'disgust', 'fear']
+CLASS_NAMES = ["anger", "fear", "disgust", "sadness", "happiness", "surprise"]
 
 # colors for each emotion (BGR)
 EMOTION_COLORS = {
@@ -249,6 +249,14 @@ def main():
 
     # build transform with SAME normalization as training
     run_dir = infer_run_dir_from_model_path(args.model_path)
+
+    cfg_path = run_dir / "config_used.yaml"
+    if cfg_path.exists():
+        import yaml
+        cfg = yaml.safe_load(cfg_path.read_text())
+        if "classes" in cfg:
+            CLASS_NAMES[:] = cfg["classes"]
+            print("Loaded classes:", CLASS_NAMES)
 
     mean, std = parse_cli_mean_std(args)
     if mean is None or std is None:
