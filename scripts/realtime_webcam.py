@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+import yaml
 
 try:
     import yaml  # PyYAML
@@ -246,7 +247,6 @@ def main():
 
     # setup gradcam
     gradcam = GradCAM(model, target_layer=model.layer4)
-
     # build transform with SAME normalization as training
     run_dir = infer_run_dir_from_model_path(args.model_path)
 

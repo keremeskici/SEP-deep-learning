@@ -1,0 +1,82 @@
+seed: 42
+device: auto
+classes:
+- anger
+- fear
+- disgust
+- sadness
+- happiness
+- surprise
+checkpoint:
+  save_interval: 5
+logging:
+  log_interval: 10
+  use_tensorboard: false
+  use_wandb: true
+  wandb:
+    project: fer-training
+    entity: SEP-deep-learning
+early_stopping:
+  min_delta: 0.001
+  enabled: true
+  patience: 6
+dataloader:
+  eval_batch_size: 64
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+  drop_last: true
+  batch_size: 64
+training:
+  optimizer:
+    name: adam
+    lr: 0.0001971334013809809
+    weight_decay: 5.0e-05
+    betas:
+    - 0.9
+    - 0.999
+  scheduler:
+    gamma: 0.4
+    name: step_lr
+    step_size: 8
+  epochs: 25
+  use_class_weights: true
+model:
+  num_classes: 6
+  architecture: modified_resnet18
+  in_channels: 3
+data:
+  eval:
+    test_follow_eval: true
+    datasets:
+    - rafdb
+    - affectnet
+  val_ratio: 0.15
+  rafdb:
+    limit_test: null
+    enabled: true
+    eval_only: false
+    train_images_root: dataset/RAF-DB/DATASET/train
+    test_images_root: dataset/RAF-DB/DATASET/test
+    train_csvs:
+    - dataset/RAF-DB/train_labels.csv
+    test_csvs:
+    - dataset/RAF-DB/test_labels.csv
+    limit: 7000
+  affectnet:
+    images_root: dataset/AffectNet
+    train_csvs:
+    - dataset/AffectNet/labels.csv
+    test_csvs: []
+    limit: 3000
+    limit_test: null
+    enabled: true
+    eval_only: false
+  mean:
+  - 0.5692540407180786
+  - 0.44559651613235474
+  - 0.3968127369880676
+  std:
+  - 0.26754137873649597
+  - 0.24237492680549622
+  - 0.2405618578195572

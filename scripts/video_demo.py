@@ -7,6 +7,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -213,8 +214,15 @@ def main():
     gradcam = GradCAM(model, target_layer=model.layer4)
     
     # setup transform
-    mean = [0.485, 0.456, 0.406]
-    std = [0.229, 0.224, 0.225]
+    config_path = PROJECT_ROOT / 'config_used.yaml'
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        mean = config['data']['mean']
+        std = config['data']['std']
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
     transform = get_test_transforms(mean, std)
     
     # setup face detector
